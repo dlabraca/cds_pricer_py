@@ -2,8 +2,8 @@ import numpy as np
 import datetime as datetime
 from dateutil.relativedelta import *
 from scipy.optimize import fsolve
-import matplotlib.pyplot as plt
 import warnings
+import copy
 
 
 def month_year_indicator(tenor_strings):
@@ -34,99 +34,103 @@ def day_count_30_360(start_date, end_date):
            + 30*(end_date.month - start_date.month)\
            + d2 - d1
 
+
+class imm:
+	def __init__(self, cob, ir_curve):
+		self.cob = cob
+		self.ir_curve = ir_curve
+		lower_bound_candidate = np.array([datetime.date(self.cob.year -1, 12, 20), datetime.date(self.cob.year, 3, 20), datetime.date(self.cob.year, 6, 20), datetime.date(self.cob.year, 9, 20), datetime.date(self.cob.year, 12, 20)])
+		self.prev_imm_date = lower_bound_candidate[[x < self.cob for x in lower_bound_candidate]][-1]
+		self.imm_dates = np.array([self.prev_imm_date  + relativedelta(months = 3 * i) for i in range(50)])
+		self.imm_dates[0] = self.cob
+		self.imm_dates_dfs = self.get_imm_dates_dfs()
+
+	def get_imm_dates_dfs(self):
+		imm_dates_dfs = np.zeros(len(self.imm_dates))
+		imm_dates_dfs[0] = 1
+		__, zeros = self.ir_curve.boostrap_dfs_zeros()
+		for i in np.arange(1, len(self.imm_dates)):
+			imm_dates_dfs[i] = self.ir_curve.interpolate_df(zeros, self.ir_curve.discount_method, self.imm_dates[i])
+		return imm_dates_dfs
+
 class discount_curve:
-		def __init__(self, cob, tenors_strings, rates, discount_method):
-			self.cob = cob
-			self.discount_method = discount_method
-			self.tenor_strings = tenor_strings
-			self.rates	= np.array(rates) / 100
-			self.tenor_dates = tenor_strings_to_dates(self.cob, self.tenor_strings)
+	def __init__(self, cob, tenor_strings, rates, discount_method):
+		self.cob = cob
+		self.discount_method = discount_method
+		self.tenor_strings = tenor_strings
+		self.rates	= np.array(rates)
+		self.tenor_dates = tenor_strings_to_dates(self.cob, self.tenor_strings)
 
-		def boostrap_dfs_zeros(self):
-			dfs = np.zeros(len(self.tenor_strings))
-			zeros = np.zeros(len(self.tenor_strings))
-			a = month_year_indicator(self.tenor_strings)
-			if self.discount_method == "ACT/360":
-				for i in range(len(self.tenor_strings)):
-					delta = self.tenor_dates[i] - self.cob
-					if a[i] == 0:
-						dfs[i] =  1 / (1 + self.rates[i] * delta.days / 360)
-					else:
-						dfs[i] = (1 - np.dot(dfs[:i] * self.rates[i], a[:i])) / (1 + self.rates[i])
-					zeros[i] = dfs[i]**(-360/delta.days) - 1
-			elif self.discount_method == "30/360":
-				for i in range(len(self.tenor_strings)):
-					delta = day_count_30_360(self.cob, self.tenor_dates[i])
-					if a[i] == 0:
-						dfs[i] =  1 / (1 + self.rates[i] * delta / 360)
-					else:
-						dfs[i] = (1 - np.dot(dfs[:i] * self.rates[i], a[:i])) / (1 + self.rates[i])
-					zeros[i] = dfs[i]**(-360/delta) - 1
-			else:
-				print("To Do")
-			return dfs, zeros
-
-		def interpolate_df(self, zeros, discount_method, date):
-			zeros = np.insert(zeros, 0, zeros[0])
-			zeros = np.insert(zeros, -1, zeros[-1])
-			dates = np.insert(self.tenor_dates, 0, self.cob)
-			dates = np.insert(dates, -1, datetime.date(2099, 12, 31))
-			diffs = dates - date
-			for i in range(len(self.tenor_dates)):
-				if (diffs[i].days <=0 and diffs[i+1].days > 0):
-					c = i
+	def boostrap_dfs_zeros(self):
+		dfs = np.zeros(len(self.tenor_strings))
+		zeros = np.zeros(len(self.tenor_strings))
+		a = month_year_indicator(self.tenor_strings)
+		if self.discount_method == "ACT/360":
+			for i in range(len(self.tenor_strings)):
+				delta = self.tenor_dates[i] - self.cob
+				if a[i] == 0:
+					dfs[i] =  1 / (1 + self.rates[i] * delta.days / 360)
 				else:
-					pass
-			if self.discount_method == "ACT/360":
-				delta_1 = date - dates[c]
-				m = (zeros[c+1] - zeros[c-1]) / (dates[c+1] - dates[c-1]).days
-				interp_zero = m * delta_1.days + zeros[c]
-				delta_2 = date - self.cob
-				interp_df = 1 / ((1+interp_zero)**(delta_2.days/360))
-				return interp_df
-			if self.discount_method == "30/360":
-				delta_1 = day_count_30_360(dates[c], date)
-				m = (zeros[c+1] - zeros[c-1]) / (dates[c+1] - dates[c-1]).days
-				interp_zero = m * delta_1 + zeros[c]
-				delta_2 = day_count_30_360(self.cob, date)
-				interp_df = 1 / ((1+interp_zero)**(delta_2/360))
-				return interp_df
+					dfs[i] = (1 - np.dot(dfs[:i] * self.rates[i], a[:i])) / (1 + self.rates[i])
+				zeros[i] = dfs[i]**(-360/delta.days) - 1
+		elif self.discount_method == "30/360":
+			for i in range(len(self.tenor_strings)):
+				delta = day_count_30_360(self.cob, self.tenor_dates[i])
+				if a[i] == 0:
+					dfs[i] =  1 / (1 + self.rates[i] * delta / 360)
+				else:
+					dfs[i] = (1 - np.dot(dfs[:i] * self.rates[i], a[:i])) / (1 + self.rates[i])
+				zeros[i] = dfs[i]**(-360/delta) - 1
+		else:
+			print("To Do")
+		return dfs, zeros
+
+	def interpolate_df(self, zeros, discount_method, date):
+		zeros = np.insert(zeros, 0, zeros[0])
+		zeros = np.insert(zeros, -1, zeros[-1])
+		dates = np.insert(self.tenor_dates, 0, self.cob)
+		dates = np.insert(dates, -1, datetime.date(2099, 12, 31))
+		diffs = dates - date
+		for i in range(len(self.tenor_dates)):
+			if (diffs[i].days <=0 and diffs[i+1].days > 0):
+				c = i
 			else:
-				print("To Do")
+				pass
+		if self.discount_method == "ACT/360":
+			delta_1 = date - dates[c]
+			m = (zeros[c+1] - zeros[c]) / (dates[c+1] - dates[c]).days
+			interp_zero = m * delta_1.days + zeros[c]
+			delta_2 = date - self.cob
+			interp_df = 1 / ((1+interp_zero)**(delta_2.days/360))
+			return interp_df
+		if self.discount_method == "30/360":
+			delta_1 = day_count_30_360(dates[c], date)
+			m = (zeros[c+1] - zeros[c]) / (dates[c+1] - dates[c]).days
+			interp_zero = m * delta_1 + zeros[c]
+			delta_2 = day_count_30_360(self.cob, date)
+			interp_df = 1 / ((1+interp_zero)**(delta_2/360))
+			return interp_df
+		else:
+			print("To Do")
 
 
-class cds_mkt_data:
-	def __init__(self, credit_spreads, recovery, maturities, cob):
+class cds:
+	def __init__(self, credit_spreads, recovery, maturities, cob, imm, ir_curve):
 		self.maturities = maturities
 		self.credit_spreads = credit_spreads
 		self.recovery = recovery
 		self.survival_probs = None
-		self.survival_probs = None
+		self.default_probs = None
+		self.hazard_rates = None
 		self.cob = cob
-		self.imm_dates = None
-		self.imm_dates_dfs = None
+		self.imm = imm
+		self.ir_curve = ir_curve
+		self.boostsrap_hazard_rates()
 
-	def get_imm_dates_lower_bound(self):
-		lower_bound_candidate = np.array([datetime.date(self.cob.year -1, 12, 20), datetime.date(self.cob.year, 3, 20), datetime.date(self.cob.year, 6, 20), datetime.date(self.cob.year, 9, 20), datetime.date(self.cob.year, 12, 20)])
-		return lower_bound_candidate[[x < self.cob for x in lower_bound_candidate]][-1]
-
-	def get_imm_dates(self):
-		imm_dates = np.array([self.get_imm_dates_lower_bound()  + relativedelta(months = 3 * i) for i in range(50)])
-		imm_dates[0] = self.cob
-		self.imm_dates = imm_dates
-		return imm_dates
-
-	def get_imm_dates_dfs(self, sofr_curve):
-		imm_dates = self.get_imm_dates()
-		imm_dates_dfs = np.zeros(len(imm_dates))
-		imm_dates_dfs[0] = 1
-		__, zeros = sofr_curve.boostrap_dfs_zeros()
-		for i in np.arange(1, len(imm_dates)):
-			imm_dates_dfs[i] = sofr_curve.interpolate_df(zeros, sofr_curve.discount_method, imm_dates[i])
-		self.imm_dates_dfs = imm_dates_dfs
-		return imm_dates_dfs
-
-
+	def cds_definition(self, maturity, coupon, notional = 1e6):
+		self.maturity = maturity
+		self.coupon = coupon
+		self.notional = notional
 
 	def C_n1(self, imm_dates_dfs, imm_dates, credit_spread, h):
 		func = 0
@@ -150,64 +154,67 @@ class cds_mkt_data:
 		return func 
 
 
-	def boostsrap_hazard_rates(self, sofr_curve):
+	def boostsrap_hazard_rates(self):
 		survival_probs = [1]
 		default_probs = [0]
 		hazard_rates = []
 		c1 = 0
-		for i in range(len(self.imm_dates)):
-			if (self.maturities[0] - self.imm_dates[i]).days >= 0:
+		for i in range(len(self.imm.imm_dates)):
+			if (self.maturities[0] - self.imm.imm_dates[i]).days >= 0:
 				c1 += 1
 			else:
 				pass
-		imm_dates_sliced = self.imm_dates[:c1]
-		imm_dates_dfs_sliced = self.imm_dates_dfs[:c1]
+		imm_dates_sliced = self.imm.imm_dates[:c1]
+		imm_dates_dfs_sliced = self.imm.imm_dates_dfs[:c1]
 		credit_spread = self.credit_spreads[0]
+
 		func = lambda h: self.C_n1(imm_dates_dfs_sliced, imm_dates_sliced, credit_spread, h)
 		initial_guess = 0
 		solution = fsolve(func, initial_guess)
-		hazard_rates.append(solution)
+		hazard_rates.append(solution[0])
 
 		for i in np.arange(1, len(imm_dates_sliced)):
-			delta_i = (self.imm_dates[i] - self.imm_dates[i-1]).days / 365
+			delta_i = (self.imm.imm_dates[i] - self.imm.imm_dates[i-1]).days / 365
 			p = (np.exp(-solution * delta_i) * survival_probs[-1])[0]
 			survival_probs.append(p)
 			default_probs.append(1-p)
 
-		for j in np.arange(1, len(maturities)):
+		for j in np.arange(1, len(self.maturities)):
 			c1 = 0
-			for i in range(len(self.imm_dates)):
-				if (self.maturities[j] - self.imm_dates[i]).days >= 0:
+			for i in range(len(self.imm.imm_dates)):
+				if (self.maturities[j] - self.imm.imm_dates[i]).days >= 0:
 					c1 += 1
 				else:
 					pass
-			imm_dates_sliced = self.imm_dates[:c1]
-			imm_dates_dfs_sliced = self.imm_dates_dfs[:c1]
+			imm_dates_sliced = self.imm.imm_dates[:c1]
+			imm_dates_dfs_sliced = self.imm.imm_dates_dfs[:c1]
 			credit_spread = self.credit_spreads[j]
 
 			c2 = 0
-			for i in range(len(self.imm_dates)):
-				if (self.maturities[j-1] - self.imm_dates[i]).days >= 0:
+			for i in range(len(self.imm.imm_dates)):
+				if (self.maturities[j-1] - self.imm.imm_dates[i]).days >= 0:
 					c2 += 1
 				else:
-					pass
+					pass 
 
 			const = 0
 			for i in np.arange(1, c2):
-				alpha = (self.imm_dates[i] - self.imm_dates[i-1]).days / 360
+				alpha = (self.imm.imm_dates[i] - self.imm.imm_dates[i-1]).days / 360
 				Aji = (1- self.recovery - credit_spread * alpha / 2) / (1- self.recovery + credit_spread * alpha / 2)
 				const = const + imm_dates_dfs_sliced[i] * (self.recovery - 1 - credit_spread * alpha / 2) * (Aji * survival_probs[i-1] - survival_probs[i])
 
-			const = const / survival_probs[c2-1] 
+			const = const / survival_probs[c2-1]
+
 
 			func = lambda h: self.C_nj(imm_dates_dfs_sliced, imm_dates_sliced, credit_spread, h, c2, const)
+
 			initial_guess = 0
 			solution = fsolve(func, initial_guess)
-			hazard_rates.append(solution)
+			hazard_rates.append(solution[0])
 
 
 			for i in np.arange(c2, len(imm_dates_sliced)):
-				delta_i = (self.imm_dates[i] - self.imm_dates[i-1]).days / 365
+				delta_i = (self.imm.imm_dates[i] - self.imm.imm_dates[i-1]).days / 365
 				p = (np.exp(-solution * delta_i) * survival_probs[-1])[0]
 				survival_probs.append(p)
 				default_probs.append(1-p)
@@ -215,49 +222,49 @@ class cds_mkt_data:
 
 		self.survival_probs = survival_probs
 		self.default_probs = default_probs
-		return survival_probs, default_probs
+		self.hazard_rates = hazard_rates
+		return 
 
-	def cds_premium_pv(self, maturity, coupon, notional):
+	def cds_premium_pv(self):
 		c1 = 0
-		for i in range(len(self.imm_dates)):
-			if (maturity - self.imm_dates[i]).days >= 0:
+		for i in range(len(self.imm.imm_dates)):
+			if (self.maturity - self.imm.imm_dates[i]).days >= 0:
 				c1 += 1
 			else:
 				pass
-		imm_dates_sliced = self.imm_dates[:c1]
-		imm_dates_dfs_sliced = self.imm_dates_dfs[:c1]
+		imm_dates_sliced = self.imm.imm_dates[:c1]
+		imm_dates_dfs_sliced = self.imm.imm_dates_dfs[:c1]
 
 		pv = 0 
 		for i in np.arange(1, len(imm_dates_sliced)):
 			alpha = (imm_dates_sliced[i] - imm_dates_sliced[i-1]).days / 360
-			pv = pv + alpha * coupon * notional * self.survival_probs[i] * imm_dates_dfs_sliced[i]  + coupon / 2 * imm_dates_dfs_sliced[i] * alpha * (-self.survival_probs[i] + self.survival_probs[i-1]) * notional
-		pv = pv + self.cds_acrrued(coupon, notional)
+			pv = pv + alpha * self.coupon * self.notional * self.survival_probs[i] * imm_dates_dfs_sliced[i]  + self.coupon / 2 * imm_dates_dfs_sliced[i] * alpha * (-self.survival_probs[i] + self.survival_probs[i-1]) * self.notional
 		return pv
 
-	def cds_default_pv(self, maturity, notional):
+	def cds_default_pv(self):
 		c1 = 0
-		for i in range(len(self.imm_dates)):
-			if (maturity - self.imm_dates[i]).days >= 0:
+		for i in range(len(self.imm.imm_dates)):
+			if (self.maturity - self.imm.imm_dates[i]).days >= 0:
 				c1 += 1
 			else:
 				pass
-		imm_dates_sliced = self.imm_dates[:c1]
-		imm_dates_dfs_sliced = self.imm_dates_dfs[:c1]
-
-		pv = - (1 - self.recovery) * notional * (-self.survival_probs[1] + self.survival_probs[0]) * imm_dates_dfs_sliced[1]
-		for i in np.arange(2, len(imm_dates_sliced)):
-			pv = pv - (1 - self.recovery) * notional * (-self.survival_probs[i] + self.survival_probs[i-1]) * imm_dates_dfs_sliced[i]
+		imm_dates_sliced = self.imm.imm_dates[:c1]
+		imm_dates_dfs_sliced = self.imm.imm_dates_dfs[:c1]
+		pv = 0
+		for i in np.arange(1, len(imm_dates_sliced)):
+			pv = pv - (1 - self.recovery) * self.notional * (-self.survival_probs[i] + self.survival_probs[i-1]) * imm_dates_dfs_sliced[i]
 		return pv
 
-	def cds_clean_pv(self, maturity, coupon, notional):
-		return self.cds_premium_pv(maturity, coupon, notional) + self.cds_default_pv(maturity, notional) - self.cds_acrrued(coupon, notional)
 
-	def cds_acrrued(self, coupon, notional):
-		alpha = (self.cob - self.get_imm_dates_lower_bound()).days / 360 - 1/360
-		return alpha * coupon * notional
+	def cds_clean_pv(self):
+		return self.cds_premium_pv() + self.cds_default_pv()
 
-	def cds_dirty_pv(self, maturity, coupon, notional):
-		return self.cds_clean_pv(maturity, coupon, notional) + self.cds_acrrued(coupon, notional)
+	def cds_acrrued(self):
+		alpha = (self.cob - self.imm.prev_imm_date).days / 360 - 1/360
+		return alpha * self.coupon * self.notional
+
+	def cds_dirty_pv(self):
+		return self.cds_clean_pv() + self.cds_acrrued()
 
 
 
@@ -272,48 +279,55 @@ if __name__ == "__main__":
 	cob = datetime.date(2022, 4, 29) 
 	
 	tenor_strings = ['1M', '2M', '3M', '6M', '9M', '1Y', '2Y','3Y', '4Y', '5Y', '6Y', '7Y', '8Y', '9Y', '10Y']
-	rates = [0.8165, 1.0158, 1.1880, 1.6668, 2.0427, 2.3107, 2.7840, 2.8380, 2.8115, 2.7785, 2.7605, 2.7498, 2.7433, 2.7398, 2.7385]
+	rates = np.array([0.8165, 1.0158, 1.1880, 1.6668, 2.0427, 2.3107, 2.7840, 2.8380, 2.8115, 2.7785, 2.7605, 2.7498, 2.7433, 2.7398, 2.7385]) / 100
 	sofr_curve = discount_curve(cob, tenor_strings, rates, "ACT/360")
-	# sofr_curve = discount_curve(cob, tenor_strings, rates, "30/360")
+	imm_cob = imm(cob, sofr_curve)
 
 	maturities = np.array([datetime.date(2022, 12, 20), datetime.date(2023, 6, 20), datetime.date(2024, 6, 20), datetime.date(2025, 6, 20), datetime.date(2026, 6, 20), datetime.date(2027, 6, 20), datetime.date(2029, 6, 20), datetime.date(2032, 6, 20)])
 	credit_spreads = np.array([161, 198, 349, 476, 578, 665, 710, 730]) / 10000
 	recovery = 0.4
 
-	cds1 = cds_mkt_data(credit_spreads, recovery, maturities, cob)
-	cds1.get_imm_dates_dfs(sofr_curve)
-	cds1.boostsrap_hazard_rates(sofr_curve)
+	credit_spreads_default = credit_spreads + 1e6
+	credit_spreads_p1bp = credit_spreads + 1/ 10000
 
-	fee_leg_pv = cds1.cds_premium_pv(datetime.date(2025, 6, 20), 500 / 10000, 8.5e6)
+
+
+
+
+	name_1 = cds(credit_spreads, recovery, maturities, cob, imm_cob, sofr_curve)
+	
+	print(name_1.hazard_rates)
+	
+	cds1 = copy.copy(name_1)
+	maturity = datetime.date(2025, 6, 20)
+	coupon = 500 / 10000
+	notional = 8.5e6
+	cds1.cds_definition(maturity, coupon, notional)
+	
+	fee_leg_pv = cds1.cds_premium_pv()
 	print(f"fee leg PV of cds: {round(fee_leg_pv,2):,}")
-	default_leg_pv = cds1.cds_default_pv(datetime.date(2025, 6, 20), 8.5e6)
+	default_leg_pv = cds1.cds_default_pv()
 	print(f"default leg PV of cds: {round(default_leg_pv,2):,}")
-	clean_pv = cds1.cds_clean_pv(datetime.date(2025, 6, 20), 500 / 10000, 8.5e6)
+	clean_pv = cds1.cds_clean_pv()
 	print(f"clean PV of cds: {round(clean_pv,2):,}")
-	acrrued_pv = cds1.cds_acrrued(500 / 10000, 8.5e6)
+	acrrued_pv = cds1.cds_acrrued()
 	print(f"accrued PV of cds: {round(acrrued_pv,2):,}")
-	dirty_pv = cds1.cds_dirty_pv(datetime.date(2025, 6, 20), 500 / 10000, 8.5e6)
+	dirty_pv = cds1.cds_dirty_pv()
 	print(f"dirty PV of cds: {round(dirty_pv,2):,}")
 
 
 	# cs01
-	credit_spreads_01 = credit_spreads + 1/ 10000
-	cds1_01 = cds_mkt_data(credit_spreads_01, recovery, maturities, cob)
-	cds1_01.get_imm_dates_dfs(sofr_curve)
-	cds1_01.boostsrap_hazard_rates(sofr_curve)
-	
-	cs01 = cds1_01.cds_clean_pv(datetime.date(2025, 6, 20), 500 / 10000, 8.5e6) - clean_pv
+	name_1_p1bp = cds(credit_spreads_p1bp, recovery, maturities, cob, imm_cob, sofr_curve)
+	cds_1_p1bp = copy.copy(name_1_p1bp)
+	cds_1_p1bp.cds_definition(maturity, coupon, notional)
+	cs01 = cds_1_p1bp.cds_clean_pv() - clean_pv
 	print(f"cs01 of cds: {round(cs01,2):,}")
 
 
-	credit_spreads_jtd = credit_spreads + 1e6
-	cds1_jtd = cds_mkt_data(credit_spreads_jtd, recovery, maturities, cob)
-	cds1_jtd.get_imm_dates_dfs(sofr_curve)
-	cds1_jtd.boostsrap_hazard_rates(sofr_curve)
-	
-	jtd = cds1_jtd.cds_clean_pv(datetime.date(2025, 6, 20), 500 / 10000, 8.5e6) - clean_pv
-	print(f"jtd of cds: {round(jtd,1):,}")
-
+	name_1_default = cds(credit_spreads_default, recovery, maturities, cob, imm_cob, sofr_curve)
+	cds_1_default = copy.copy(name_1_default)
+	cds_1_default.cds_definition(maturity, coupon, notional)	
+	jtd = cds_1_default.cds_clean_pv() - clean_pv
 
 
 
